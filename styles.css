@@ -260,6 +260,20 @@ dl { margin-top: 6px; }
 /* Data screen */
 .prose p { color: var(--muted); font-size: 15px; margin-top: 6px; }
 .stack { display: grid; gap: 8px; margin-top: 10px; }
+.prose > .action { margin-top: 10px; }
+.code {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: 13px/1.35 ui-monospace, Menlo, monospace;
+  resize: none;
+  word-break: break-all;
+}
 .action {
   width: 100%; min-height: 48px;
   border: 1.5px solid var(--line);

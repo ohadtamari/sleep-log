@@ -5,6 +5,8 @@
   const STORE = 'sleep-log.v1';
   const MAX_CUPS = 12;
   const BACKUP_NUDGE_DAYS = 30;
+  // Public half of the key that signs reminders. The private half is only in the reminder service.
+  const VAPID_PUBLIC_KEY = 'BD8z0uQb2xhVnG59e3U6zjyxefxWexiFfhlGYowPqohGr9QR1BS0sN4kFuMwLM5Cng43Ojesqq4YCRYNEBmWZY8';
   const main = document.getElementById('main');
   const importInput = document.getElementById('import-file');
 
@@ -60,7 +62,15 @@
     return L.weekStart(ref);
   };
 
-  const state = { tab: 'log', ...initialView(), week: initialWeek(), notice: '' };
+  // A tapped reminder opens straight on its form.
+  const viewForPart = (part) => {
+    const view = initialView();
+    return part === 'morning' || part === 'evening' ? { ...view, date: part === 'morning' ? todayKey() : view.date, part } : view;
+  };
+  const partFromUrl = new URLSearchParams(window.location.search).get('part');
+  if (partFromUrl) window.history.replaceState(null, '', window.location.pathname);
+
+  const state = { tab: 'log', ...viewForPart(partFromUrl), week: initialWeek(), notice: '', push: { status: 'loading', code: '', copied: false } };
 
   const evening = (key) => db.entries[key]?.evening || L.emptyEvening();
   const morning = (key) => db.entries[key]?.morning || L.emptyMorning();
@@ -330,6 +340,34 @@
       נתונים שמוזנים כאן בדפדפן לא עוברים ליישומון, אז כדאי למלא רק מהסמל במסך הבית.
     </aside>`);
 
+  const pushHtml = () => {
+    const { status, code, copied } = state.push;
+    const head = '<h2>התראות</h2>';
+    if (status === 'loading') return `${head}<p>בודק…</p>`;
+    if (status === 'unsupported') {
+      return `${head}<p>${isStandalone()
+        ? 'המכשיר הזה לא תומך בהתראות מהיישומון. צריך iOS 16.4 ומעלה.'
+        : 'אפשר להפעיל התראות רק מתוך היישומון שבמסך הבית.'}</p>`;
+    }
+    if (status === 'denied') {
+      return `${head}<p>ההתראות חסומות. אפשר לאפשר אותן בהגדרות האייפון, תחת ״עדכונים״ ו״יומן שינה״.</p>`;
+    }
+    if (status === 'error') {
+      return `${head}<p>הפעלת ההתראות נכשלה. נסה שוב בעוד רגע.</p>
+        <button type="button" class="action primary" data-act="push-on">הפעלת התראות</button>`;
+    }
+    if (status === 'off') {
+      return `${head}<p>תזכורת בבוקר ובערב. שירות התזכורות שומר רק כתובת למשלוח התראות ואת השעות, בלי נתוני שינה.</p>
+        <button type="button" class="action primary" data-act="push-on">הפעלת התראות</button>`;
+    }
+    return `${head}<p>ההתראות מופעלות במכשיר. כדי שיגיעו, צריך להעתיק את הקוד הזה פעם אחת לשירות התזכורות.</p>
+      <textarea class="code" readonly dir="ltr" rows="4" aria-label="קוד התראות">${code.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</textarea>
+      <div class="stack">
+        <button type="button" class="action primary" data-act="push-copy">${copied ? 'הקוד הועתק ✓' : 'העתקת הקוד'}</button>
+        <button type="button" class="action" data-act="push-off">כיבוי התראות</button>
+      </div>`;
+  };
+
   const dataHtml = () => {
     const count = Object.keys(db.entries).length;
     const last = db.lastBackup ? dateLong.format(new Date(db.lastBackup)) : 'עדיין לא';
@@ -338,8 +376,9 @@
       ${state.notice ? `<p class="notice" role="status">${state.notice}</p>` : ''}
       <section class="card prose">
         <h2>פרטיות</h2>
-        <p>הנתונים נשמרים רק על המכשיר הזה. אין כאן חשבון, שרת או ניתוח שימוש, והיישומון חסום טכנית משליחת מידע החוצה.</p>
+        <p>נתוני השינה נשמרים רק על המכשיר הזה. אין כאן חשבון או ניתוח שימוש, והיישומון חסום טכנית משליחת מידע החוצה.</p>
       </section>
+      <section class="card prose" id="push">${pushHtml()}</section>
       <section class="card prose">
         <h2>גיבוי</h2>
         <p>מחיקת היישומון ממסך הבית מוחקת גם את הנתונים. קובץ גיבוי שומר עותק במקום שתבחר, למשל ב״קבצים״.</p>
@@ -372,7 +411,85 @@
     state.notice = '';
     render();
     window.scrollTo(0, 0);
+    if (tab === 'data') loadPush();
   };
+
+  // ---------- notifications ----------
+  const showPush = (next) => {
+    state.push = { code: '', copied: false, ...next };
+    const box = document.getElementById('push');
+    if (box) box.innerHTML = pushHtml();
+  };
+  const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const subscriptionCode = (sub) => {
+    const { endpoint, keys } = sub.toJSON();
+    return JSON.stringify({ endpoint, keys });
+  };
+
+  async function loadPush() {
+    if (!pushSupported()) return showPush({ status: 'unsupported' });
+    if (Notification.permission === 'denied') return showPush({ status: 'denied' });
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      return showPush(sub ? { status: 'on', code: subscriptionCode(sub) } : { status: 'off' });
+    } catch {
+      return showPush({ status: 'error' });
+    }
+  }
+
+  const keyBytes = (text) => Uint8Array.from(
+    atob(text.replace(/-/g, '+').replace(/_/g, '/')),
+    (c) => c.charCodeAt(0),
+  );
+
+  const pushOn = async () => {
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission === 'denied') return showPush({ status: 'denied' });
+      if (permission !== 'granted') return showPush({ status: 'off' });
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: keyBytes(VAPID_PUBLIC_KEY),
+      });
+      return showPush({ status: 'on', code: subscriptionCode(sub) });
+    } catch {
+      return showPush({ status: 'error' });
+    }
+  };
+
+  const pushOff = async () => {
+    if (!window.confirm('לכבות את ההתראות? כדי להפעיל אותן שוב יהיה צריך להעתיק קוד חדש לשירות התזכורות.')) return;
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) await sub.unsubscribe();
+      showPush({ status: 'off' });
+    } catch {
+      showPush({ status: 'error' });
+    }
+  };
+
+  const pushCopy = async () => {
+    const { code } = state.push;
+    try {
+      await navigator.clipboard.writeText(code);
+      showPush({ status: 'on', code, copied: true });
+    } catch {
+      // Clipboard refused: select the text so it can be copied by hand.
+      const box = document.querySelector('textarea.code');
+      if (box) box.select();
+    }
+  };
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', (ev) => {
+      if (!ev.data || !ev.data.openPart) return;
+      Object.assign(state, viewForPart(ev.data.openPart));
+      goTab('log');
+    });
+  }
   // Refreshes what depends on a typed value without touching the input in use.
   const refreshLive = () => {
     const strip = document.getElementById('strip');
@@ -486,6 +603,9 @@
       goTab('week');
     },
     'go-data': () => goTab('data'),
+    'push-on': pushOn,
+    'push-off': pushOff,
+    'push-copy': pushCopy,
     export: exportBackup,
     import: () => importInput.click(),
     wipe: () => {

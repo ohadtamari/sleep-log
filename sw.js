@@ -1,5 +1,5 @@
 // Keeps the app working offline. Bump CACHE whenever a file changes.
-const CACHE = 'sleep-log-v1';
+const CACHE = 'sleep-log-v2';
 const ASSETS = [
   './',
   'index.html',
@@ -21,6 +21,46 @@ self.addEventListener('activate', (event) => {
     caches.keys()
       .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
+  );
+});
+
+const REMINDERS = {
+  morning: 'בוקר טוב. איך ישנת? זה הזמן למלא את היומן.',
+  evening: 'ערב טוב. זה הזמן למלא את היומן של היום.',
+};
+
+const readPart = (event) => {
+  try {
+    const part = event.data && event.data.json().part;
+    if (REMINDERS[part]) return part;
+  } catch { /* an empty or unreadable message still shows a reminder */ }
+  const hour = new Date().getHours();
+  return hour >= 4 && hour < 15 ? 'morning' : 'evening';
+};
+
+self.addEventListener('push', (event) => {
+  const part = readPart(event);
+  event.waitUntil(self.registration.showNotification('יומן שינה', {
+    body: REMINDERS[part],
+    icon: 'icons/icon-192.png',
+    lang: 'he',
+    dir: 'rtl',
+    tag: 'reminder',
+    data: { part },
+  }));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const part = event.notification.data && event.notification.data.part;
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windows) => {
+      if (windows.length) {
+        windows[0].postMessage({ openPart: part });
+        return windows[0].focus();
+      }
+      return self.clients.openWindow(new URL(`index.html?part=${part}`, self.registration.scope).href);
+    })
   );
 });
 
