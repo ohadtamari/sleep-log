@@ -5,7 +5,7 @@
   const STORE = 'sleep-log.v1';
   const MAX_CUPS = 12;
   const BACKUP_NUDGE_DAYS = 30;
-  const APP_VERSION = 5;
+  const APP_VERSION = 6;
   // Public half of the key that signs reminders. The private half is only in the reminder service.
   const VAPID_PUBLIC_KEY = 'BD8z0uQb2xhVnG59e3U6zjyxefxWexiFfhlGYowPqohGr9QR1BS0sN4kFuMwLM5Cng43Ojesqq4YCRYNEBmWZY8';
   const main = document.getElementById('main');
@@ -188,6 +188,18 @@
       <input class="time" type="time" data-field="${field}" value="${value || ''}">
     </label>`;
 
+  const minutesInput = (field, value, label) => `
+    <label class="time-row">
+      <span>${label}</span>
+      <span class="minutes">
+        <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="3" data-field="${field}" value="${value ?? ''}" placeholder="—" dir="ltr">
+        <small>דק׳</small>
+      </span>
+    </label>`;
+
+  // Drawn rather than typed: the characters ‹ and › flip by themselves in right-to-left text.
+  const chevron = (side) => `<svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="${side === 'right' ? 'M9 5l7 7-7 7' : 'M15 5l-7 7 7 7'}"/></svg>`;
+
   const eveningHtml = () => {
     const e = evening(state.date);
     const cups = e.coffeeTimes.map((t, i) => timeInput(`cup:${i}`, t, `כוס ${i + 1}, באיזו שעה?`)).join('');
@@ -247,12 +259,24 @@
           </div>
         </div>
         ${m.woke ? `
-          ${m.wakeTimes.map((t, i) => `
-            <div class="wake-row">
-              ${timeInput(`night:${i}`, t, `התעוררות ${i + 1}`)}
-              ${m.wakeTimes.length > 1 ? `<button type="button" class="remove" data-act="wake-remove" data-index="${i}" aria-label="מחיקת התעוררות ${i + 1}">×</button>` : ''}
+          ${m.wakings.map((w, i) => `
+            <div class="waking">
+              <div class="waking-head">
+                <h3>התעוררות ${i + 1}</h3>
+                ${m.wakings.length > 1 ? `<button type="button" class="remove" data-act="wake-remove" data-index="${i}" aria-label="מחיקת התעוררות ${i + 1}">×</button>` : ''}
+              </div>
+              ${timeInput(`night:${i}:time`, w.time, 'באיזו שעה?')}
+              ${minutesInput(`night:${i}:awake`, w.awake, 'כמה זמן הייתי ער?')}
+              ${minutesInput(`night:${i}:back`, w.back, 'כמה זמן לקח לי לחזור לישון?')}
+              <div class="row">
+                <span>לחזור להירדם היה</span>
+                <div class="pair">
+                  <button type="button" class="choice${w.ease === 'easy' ? ' active' : ''}" data-act="wake-ease" data-index="${i}" data-val="easy" aria-pressed="${w.ease === 'easy'}">קל</button>
+                  <button type="button" class="choice${w.ease === 'hard' ? ' active' : ''}" data-act="wake-ease" data-index="${i}" data-val="hard" aria-pressed="${w.ease === 'hard'}">קשה</button>
+                </div>
+              </div>
             </div>`).join('')}
-          <button type="button" class="action add" data-act="wake-add" ${m.wakeTimes.length >= L.MAX_WAKINGS ? 'disabled' : ''}>+ הוספת התעוררות</button>` : ''}
+          <button type="button" class="action add" data-act="wake-add" ${m.wakings.length >= L.MAX_WAKINGS ? 'disabled' : ''}>+ הוספת התעוררות</button>` : ''}
       </section>
       <section class="card">
         <label class="row score-row">
@@ -279,14 +303,14 @@
     return `
       ${installHint()}
       ${isWeekend && hasWeekData ? `<button type="button" class="banner" data-act="open-this-week">
-        <span>סוף השבוע הגיע. הסיכום השבועי מוכן</span><span class="chev" aria-hidden="true">‹</span></button>` : ''}
+        <span>סוף השבוע הגיע. הסיכום השבועי מוכן</span>${chevron('left')}</button>` : ''}
       <header class="dayhead">
-        <button type="button" class="arrow" data-act="day-prev" aria-label="היום הקודם">›</button>
+        <button type="button" class="arrow" data-act="day-prev" aria-label="היום הקודם">${chevron('right')}</button>
         <div class="title">
           <h1>${dateLong.format(d)}</h1>
           ${label ? `<p>${label}</p>` : ''}
         </div>
-        <button type="button" class="arrow" data-act="day-next" aria-label="היום הבא" ${state.date >= today ? 'disabled' : ''}>‹</button>
+        <button type="button" class="arrow" data-act="day-next" aria-label="היום הבא" ${state.date >= today ? 'disabled' : ''}>${chevron('left')}</button>
       </header>
       <div class="strip" id="strip">${stripHtml()}</div>
       <div class="segment" role="group" aria-label="חלק ביום">
@@ -324,11 +348,14 @@
       if (m.score != null) parts.push(`ציון ${m.score}`);
       if (m.feeling) parts.push(L.FEELINGS[m.feeling - 1]);
     }
-    const wakings = rec.morning && rec.morning.woke ? rec.morning.wakeTimes : [];
-    const wakingTimes = L.sortNightTimes(wakings).join(', ');
-    const wakingLine = wakings.length
-      ? `${wakings.length === 1 ? 'התעוררות אחת' : `${wakings.length} התעוררויות`}${wakingTimes ? `: ${wakingTimes}` : ''}`
-      : '';
+    const wakings = rec.morning && rec.morning.woke ? L.sortWakings(rec.morning.wakings) : [];
+    const wakingLines = wakings.map((w) => {
+      const details = [w.time || 'התעוררות'];
+      if (w.awake != null) details.push(`ער ${L.fmtMinutes(w.awake)}`);
+      if (w.back != null) details.push(`חזרה לשינה ${L.fmtMinutes(w.back)}`);
+      if (w.ease) details.push(w.ease === 'easy' ? 'קל' : 'קשה');
+      return `<span class="sub">${details.join(' · ')}</span>`;
+    }).join('');
     const dayParts = [];
     if (rec.evening) {
       const e = rec.evening;
@@ -344,7 +371,7 @@
       <span class="what">
         ${empty ? '<span>לא מולא</span>' : ''}
         ${parts.length ? `<span>${parts.join(' · ')}</span>` : ''}
-        ${wakingLine ? `<span class="sub">${wakingLine}</span>` : ''}
+        ${wakingLines}
         ${dayParts.length ? `<span class="sub">${dayParts.join(' · ')}</span>` : ''}
       </span>
     </button>`;
@@ -356,7 +383,7 @@
     const age = last ? (Date.now() - last) / 86400000 : Infinity;
     if (age < BACKUP_NUDGE_DAYS) return '';
     return `<button type="button" class="banner quiet" data-act="go-data">
-      <span>${last ? 'עבר חודש מהגיבוי האחרון' : 'עוד לא גיבית את הנתונים'}</span><span class="chev" aria-hidden="true">‹</span></button>`;
+      <span>${last ? 'עבר חודש מהגיבוי האחרון' : 'עוד לא גיבית את הנתונים'}</span>${chevron('left')}</button>`;
   };
 
   const weekHtml = () => {
@@ -366,12 +393,12 @@
     const atLatest = L.addDays(state.week, 7) > todayKey();
     const nav = `
       <header class="dayhead">
-        <button type="button" class="arrow" data-act="week-prev" aria-label="השבוע הקודם">›</button>
+        <button type="button" class="arrow" data-act="week-prev" aria-label="השבוע הקודם">${chevron('right')}</button>
         <div class="title">
           <h1>סיכום שבועי</h1>
           <p>${range}</p>
         </div>
-        <button type="button" class="arrow" data-act="week-next" aria-label="השבוע הבא" ${atLatest ? 'disabled' : ''}>‹</button>
+        <button type="button" class="arrow" data-act="week-next" aria-label="השבוע הבא" ${atLatest ? 'disabled' : ''}>${chevron('left')}</button>
       </header>`;
     if (!s.morningCount && !s.eveningCount) {
       return `${nav}<div class="empty-state"><h2>אין נתונים לשבוע הזה</h2><p>אחרי שתמלא בוקר או ערב, הממוצעים יופיעו כאן.</p></div>`;
@@ -400,6 +427,9 @@
           ${statRow('התעוררות, בממוצע', L.fmtTime(s.avgWake))}
           ${statRow('סך כל השינה', s.totalSleep == null ? '—' : `${L.fmtDuration(s.totalSleep)} שעות`, s.nights ? `ב-${s.nights} לילות` : '')}
           ${statRow('התעוררויות בלילה', !s.night.answered ? '—' : s.night.total === 1 ? 'פעם אחת' : `${s.night.total} פעמים`, nightNotes.join(', '))}
+          ${s.night.total ? `
+            ${statRow('זמן ער בלילה, סך הכל', L.fmtMinutes(s.night.totalAwake), s.night.avgAwake == null ? '' : `${L.fmtMinutes(s.night.avgAwake)} בממוצע להתעוררות`)}
+            ${statRow('חזרה לשינה, בממוצע', L.fmtMinutes(s.night.avgBack), s.night.easy + s.night.hard ? `היה קל ${s.night.easy === 1 ? 'פעם אחת' : `${s.night.easy} פעמים`}, קשה ${s.night.hard === 1 ? 'פעם אחת' : `${s.night.hard} פעמים`}` : '')}` : ''}
         </dl>
       </section>
       <section class="card">
@@ -851,20 +881,27 @@
       const m = structuredClone(morning(state.date));
       const val = el.dataset.val === 'true';
       m.woke = m.woke === val ? null : val; // tapping again clears the answer
-      m.wakeTimes = m.woke ? [''] : [];
+      m.wakings = m.woke ? [L.emptyWaking()] : [];
       commit(state.date, 'morning', m);
       render();
     },
     'wake-add': () => {
       const m = structuredClone(morning(state.date));
-      if (m.wakeTimes.length >= L.MAX_WAKINGS) return;
-      m.wakeTimes.push('');
+      if (m.wakings.length >= L.MAX_WAKINGS) return;
+      m.wakings.push(L.emptyWaking());
       commit(state.date, 'morning', m);
       render();
     },
     'wake-remove': (el) => {
       const m = structuredClone(morning(state.date));
-      m.wakeTimes.splice(Number(el.dataset.index), 1);
+      m.wakings.splice(Number(el.dataset.index), 1);
+      commit(state.date, 'morning', m);
+      render();
+    },
+    'wake-ease': (el) => {
+      const m = structuredClone(morning(state.date));
+      const waking = m.wakings[Number(el.dataset.index)];
+      waking.ease = waking.ease === el.dataset.val ? null : el.dataset.val; // tapping again clears the answer
       commit(state.date, 'morning', m);
       render();
     },
@@ -947,8 +984,16 @@
       if (String(score ?? '') !== value) ev.target.value = score ?? '';
       commit(state.date, 'morning', { ...morning(state.date), score });
     } else if (field.startsWith('night:')) {
+      const [, index, part] = field.split(':');
       const m = structuredClone(morning(state.date));
-      m.wakeTimes[Number(field.slice(6))] = value;
+      if (part === 'time') {
+        m.wakings[Number(index)].time = value;
+      } else {
+        const digits = value.replace(/\D/g, '');
+        const minutes = digits === '' ? null : Math.min(Number(digits), L.MAX_MINUTES);
+        if (String(minutes ?? '') !== value) ev.target.value = minutes ?? '';
+        m.wakings[Number(index)][part] = minutes;
+      }
       commit(state.date, 'morning', m);
     } else if (field.startsWith('cup:')) {
       const e = structuredClone(evening(state.date));
