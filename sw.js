@@ -1,5 +1,5 @@
 // Keeps the app working offline. Bump CACHE whenever a file changes.
-const CACHE = 'sleep-log-v2';
+const CACHE = 'sleep-log-v3';
 const ASSETS = [
   './',
   'index.html',

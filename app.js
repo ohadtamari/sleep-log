@@ -178,6 +178,22 @@
         <p class="computed" id="duration">${durationHtml(m)}</p>
       </section>
       <section class="card">
+        <div class="row">
+          <h2>התעוררתי בלילה?</h2>
+          <div class="pair">
+            <button type="button" class="choice${m.woke === true ? ' active' : ''}" data-act="woke" data-val="true" aria-pressed="${m.woke === true}">כן</button>
+            <button type="button" class="choice${m.woke === false ? ' active' : ''}" data-act="woke" data-val="false" aria-pressed="${m.woke === false}">לא</button>
+          </div>
+        </div>
+        ${m.woke ? `
+          ${m.wakeTimes.map((t, i) => `
+            <div class="wake-row">
+              ${timeInput(`night:${i}`, t, `התעוררות ${i + 1}`)}
+              ${m.wakeTimes.length > 1 ? `<button type="button" class="remove" data-act="wake-remove" data-index="${i}" aria-label="מחיקת התעוררות ${i + 1}">×</button>` : ''}
+            </div>`).join('')}
+          <button type="button" class="action add" data-act="wake-add" ${m.wakeTimes.length >= L.MAX_WAKINGS ? 'disabled' : ''}>+ הוספת התעוררות</button>` : ''}
+      </section>
+      <section class="card">
         <label class="row score-row">
           <h2>ציון שינה ב-Apple Watch</h2>
           <span class="score" dir="ltr">
@@ -247,6 +263,11 @@
       if (m.score != null) parts.push(`ציון ${m.score}`);
       if (m.feeling) parts.push(L.FEELINGS[m.feeling - 1]);
     }
+    const wakings = rec.morning && rec.morning.woke ? rec.morning.wakeTimes : [];
+    const wakingTimes = L.sortNightTimes(wakings).join(', ');
+    const wakingLine = wakings.length
+      ? `${wakings.length === 1 ? 'התעוררות אחת' : `${wakings.length} התעוררויות`}${wakingTimes ? `: ${wakingTimes}` : ''}`
+      : '';
     const dayParts = [];
     if (rec.evening) {
       const e = rec.evening;
@@ -262,6 +283,7 @@
       <span class="what">
         ${empty ? '<span>לא מולא</span>' : ''}
         ${parts.length ? `<span>${parts.join(' · ')}</span>` : ''}
+        ${wakingLine ? `<span class="sub">${wakingLine}</span>` : ''}
         ${dayParts.length ? `<span class="sub">${dayParts.join(' · ')}</span>` : ''}
       </span>
     </button>`;
@@ -296,6 +318,11 @@
     const coke = itemValue(s.coke);
     const rit = itemValue(s.ritalin);
     const work = itemValue(s.workout);
+    const nightNotes = [];
+    if (s.night.answered) {
+      nightNotes.push(`ב-${s.night.woke} מתוך ${s.night.answered} לילות שמולאו`, `${one(s.night.avgPerNight)} בלילה בממוצע`);
+    }
+    if (s.night.avgTime != null) nightNotes.push(`שעה ממוצעת ${L.fmtTime(s.night.avgTime)}`);
     return `
       ${nav}
       <p class="coverage">${s.morningCount} מתוך 7 בקרים ו-${s.eveningCount} מתוך 7 ערבים מולאו. הממוצעים מחושבים רק ממה שמולא.</p>
@@ -310,12 +337,13 @@
           ${statRow('הליכה לישון, בממוצע', L.fmtTime(s.avgBed))}
           ${statRow('התעוררות, בממוצע', L.fmtTime(s.avgWake))}
           ${statRow('סך כל השינה', s.totalSleep == null ? '—' : `${L.fmtDuration(s.totalSleep)} שעות`, s.nights ? `ב-${s.nights} לילות` : '')}
+          ${statRow('התעוררויות בלילה', !s.night.answered ? '—' : s.night.total === 1 ? 'פעם אחת' : `${s.night.total} פעמים`, nightNotes.join(', '))}
         </dl>
       </section>
       <section class="card">
         <h2>במהלך היום</h2>
         <dl>
-          ${statRow('קפה, סך הכל', s.eveningCount ? `${s.coffeeTotal} כוסות` : '—', s.coffeeAvg == null ? '' : `${one(s.coffeeAvg)} ביום בממוצע`)}
+          ${statRow('קפה, סך הכל', !s.eveningCount ? '—' : s.coffeeTotal === 1 ? 'כוס אחת' : `${s.coffeeTotal} כוסות`, s.coffeeAvg == null ? '' : `${one(s.coffeeAvg)} ביום בממוצע`)}
           ${statRow('הקפה האחרון, בממוצע', L.fmtTime(s.avgLastCoffee))}
           ${statRow('קולה זירו', coke.value, coke.note)}
           ${statRow('ריטלין', rit.value, rit.note)}
@@ -585,6 +613,27 @@
       commit(state.date, 'evening', e);
       render();
     },
+    woke: (el) => {
+      const m = structuredClone(morning(state.date));
+      const val = el.dataset.val === 'true';
+      m.woke = m.woke === val ? null : val; // tapping again clears the answer
+      m.wakeTimes = m.woke ? [''] : [];
+      commit(state.date, 'morning', m);
+      render();
+    },
+    'wake-add': () => {
+      const m = structuredClone(morning(state.date));
+      if (m.wakeTimes.length >= L.MAX_WAKINGS) return;
+      m.wakeTimes.push('');
+      commit(state.date, 'morning', m);
+      render();
+    },
+    'wake-remove': (el) => {
+      const m = structuredClone(morning(state.date));
+      m.wakeTimes.splice(Number(el.dataset.index), 1);
+      commit(state.date, 'morning', m);
+      render();
+    },
     feeling: (el) => {
       const m = { ...morning(state.date) };
       const val = Number(el.dataset.val);
@@ -638,6 +687,10 @@
       const score = digits === '' ? null : Math.min(Number(digits), 100);
       if (String(score ?? '') !== value) ev.target.value = score ?? '';
       commit(state.date, 'morning', { ...morning(state.date), score });
+    } else if (field.startsWith('night:')) {
+      const m = structuredClone(morning(state.date));
+      m.wakeTimes[Number(field.slice(6))] = value;
+      commit(state.date, 'morning', m);
     } else if (field.startsWith('cup:')) {
       const e = structuredClone(evening(state.date));
       e.coffeeTimes[Number(field.slice(4))] = value;

@@ -4,6 +4,7 @@ window.SleepLogic = (() => {
 
   const FEELINGS = ['עייף מאוד', 'קצת עייף', 'סביר', 'טוב', 'מעולה'];
   const ITEMS = ['coke', 'ritalin', 'workout'];
+  const MAX_WAKINGS = 12;
   const DAY = 1440;
   const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
   const KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -63,10 +64,18 @@ window.SleepLogic = (() => {
     ritalin: { on: null, time: '' },
     workout: { on: null, time: '' },
   });
-  const emptyMorning = () => ({ bed: '', wake: '', score: null, feeling: null });
+  const emptyMorning = () => ({ bed: '', wake: '', score: null, feeling: null, woke: null, wakeTimes: [] });
 
   const isEveningLogged = (e) => !!e && (e.coffee > 0 || ITEMS.some((i) => e[i].on !== null));
-  const isMorningLogged = (m) => !!m && (!!m.bed || !!m.wake || m.score != null || m.feeling != null);
+  const isMorningLogged = (m) => !!m && (!!m.bed || !!m.wake || m.score != null || m.feeling != null || m.woke != null);
+
+  // Night times in the order they happened: 23:50 comes before 02:10.
+  const sortNightTimes = (times) => times
+    .filter((t) => toMin(t) != null)
+    .sort((a, b) => {
+      const place = (t) => (toMin(t) < BED_CUT ? toMin(t) + DAY : toMin(t));
+      return place(a) - place(b);
+    });
 
   const eveningMissing = (e) => {
     const out = [];
@@ -82,6 +91,8 @@ window.SleepLogic = (() => {
     const out = [];
     if (!m.bed) out.push('שעת השינה');
     if (!m.wake) out.push('שעת ההתעוררות');
+    if (m.woke == null) out.push('התעוררויות בלילה');
+    else if (m.woke && m.wakeTimes.some((t) => !t)) out.push('שעות ההתעוררויות בלילה');
     if (m.score == null) out.push('ציון השינה');
     if (m.feeling == null) out.push('הרגשה');
     return out;
@@ -115,7 +126,18 @@ window.SleepLogic = (() => {
       };
     };
 
+    const answeredNights = mornings.filter((m) => m.woke === true || m.woke === false);
+    const wokeNights = answeredNights.filter((m) => m.woke);
+    const wakeups = wokeNights.flatMap((m) => m.wakeTimes);
+
     return {
+      night: {
+        answered: answeredNights.length,
+        woke: wokeNights.length,
+        total: wakeups.length,
+        avgPerNight: answeredNights.length ? wakeups.length / answeredNights.length : null,
+        avgTime: meanClock(wakeups, BED_CUT),
+      },
       morningCount: mornings.length,
       eveningCount: evenings.length,
       nights: durations.length,
@@ -162,7 +184,10 @@ window.SleepLogic = (() => {
         const src = value.morning;
         const score = Number.isInteger(src.score) && src.score >= 0 && src.score <= 100 ? src.score : null;
         const feeling = Number.isInteger(src.feeling) && src.feeling >= 1 && src.feeling <= 5 ? src.feeling : null;
-        const m = { bed: cleanTime(src.bed), wake: cleanTime(src.wake), score, feeling };
+        const woke = src.woke === true || src.woke === false ? src.woke : null;
+        const times = Array.isArray(src.wakeTimes) ? src.wakeTimes.slice(0, MAX_WAKINGS).map(cleanTime) : [];
+        const wakeTimes = woke ? (times.length ? times : ['']) : [];
+        const m = { bed: cleanTime(src.bed), wake: cleanTime(src.wake), score, feeling, woke, wakeTimes };
         if (isMorningLogged(m)) rec.morning = m;
       }
       if (rec.evening || rec.morning) out[key] = rec;
@@ -171,7 +196,7 @@ window.SleepLogic = (() => {
   };
 
   return {
-    FEELINGS, ITEMS, toKey, fromKey, addDays, weekStart, weekKeys, toMin, fmtTime, fmtDuration,
+    FEELINGS, ITEMS, MAX_WAKINGS, sortNightTimes, toKey, fromKey, addDays, weekStart, weekKeys, toMin, fmtTime, fmtDuration,
     sleepMinutes, emptyEvening, emptyMorning, isEveningLogged, isMorningLogged,
     eveningMissing, morningMissing, summarize, cleanEntries,
   };
