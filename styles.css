@@ -273,6 +273,26 @@ dl { margin-top: 6px; }
 .prose p { color: var(--muted); font-size: 15px; margin-top: 6px; }
 .stack { display: grid; gap: 8px; margin-top: 10px; }
 .prose > .action { margin-top: 10px; }
+.prose p b { color: var(--text); }
+.prose p.recovery,
+.recovery-input {
+  width: 100%;
+  margin-top: 10px;
+  padding: 12px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: 600 15px/1.4 ui-monospace, Menlo, monospace;
+  text-align: center;
+  word-break: break-word;
+}
+.prose p.recovery { -webkit-user-select: all; user-select: all; }
+.recovery-input { display: block; font-size: 16px; }
+.recovery-input::placeholder { color: var(--muted); font-weight: 400; font-size: 13px; }
+.prose p.auto-message { color: var(--text); font-weight: 600; }
+.prose p.auto-error { color: var(--danger); font-weight: 600; }
+.action.danger-quiet { color: var(--danger); }
 .code {
   display: block;
   width: 100%;

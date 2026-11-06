@@ -37,13 +37,73 @@
   };
   let db = load();
   let saveFailed = false;
+
+  // Automatic backup. Kept apart from the journal so the recovery code never ends up in a backup file.
+  const B = window.SleepBackup;
+  const BACKUP_URL = 'https://sleep-log-reminders.ohadtamari.workers.dev/backup';
+  const AUTO_STORE = 'sleep-log.backup.v1';
+  const UPLOAD_DELAY_MS = 2000;
+  const loadAuto = () => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(AUTO_STORE));
+      return saved && B.normalizeCode(saved.code) ? saved : {};
+    } catch {
+      return {};
+    }
+  };
+  let auto = loadAuto(); // { code, lastAt, dirty, error }
+  const saveAuto = () => {
+    try {
+      if (auto.code) localStorage.setItem(AUTO_STORE, JSON.stringify(auto));
+      else localStorage.removeItem(AUTO_STORE);
+    } catch { /* the next change tries again */ }
+  };
+  let uploadTimer = null;
+  let uploading = false;
+  let changeCount = 0;
+
+  const refreshAuto = () => {
+    const box = document.getElementById('auto');
+    if (box) box.innerHTML = autoHtml();
+  };
+
+  const runUpload = async () => {
+    clearTimeout(uploadTimer);
+    // An empty journal is never uploaded, so it cannot replace a good backup.
+    if (!auto.code || !auto.dirty || uploading || !Object.keys(db.entries).length) return;
+    uploading = true;
+    const startedAt = changeCount;
+    let status = 0;
+    try {
+      status = await B.upload(BACKUP_URL, auto.code, db.entries);
+    } catch { /* offline: stays dirty and retries later */ }
+    uploading = false;
+    if (status >= 200 && status < 300) {
+      auto.lastAt = new Date().toISOString();
+      auto.error = '';
+      if (changeCount === startedAt) auto.dirty = false;
+    } else {
+      auto.error = status === 403 ? 'mismatch' : 'network';
+    }
+    saveAuto();
+    refreshAuto();
+    if (auto.dirty && !auto.error) uploadTimer = setTimeout(runUpload, UPLOAD_DELAY_MS);
+  };
+
   const persist = () => {
     try {
       localStorage.setItem(STORE, JSON.stringify(db));
       saveFailed = false;
     } catch {
       saveFailed = true;
+      return;
     }
+    if (!auto.code) return;
+    auto.dirty = true;
+    changeCount += 1;
+    saveAuto();
+    clearTimeout(uploadTimer);
+    uploadTimer = setTimeout(runUpload, UPLOAD_DELAY_MS);
   };
 
   // ---------- state ----------
@@ -70,7 +130,7 @@
   const partFromUrl = new URLSearchParams(window.location.search).get('part');
   if (partFromUrl) window.history.replaceState(null, '', window.location.pathname);
 
-  const state = { tab: 'log', ...viewForPart(partFromUrl), week: initialWeek(), notice: '', push: { status: 'loading', code: '', copied: false } };
+  const state = { tab: 'log', ...viewForPart(partFromUrl), week: initialWeek(), notice: '', push: { status: 'loading', code: '', copied: false }, autoView: { mode: 'main', message: '', code: '', copied: false } };
 
   const evening = (key) => db.entries[key]?.evening || L.emptyEvening();
   const morning = (key) => db.entries[key]?.morning || L.emptyMorning();
@@ -291,10 +351,11 @@
 
   const backupNudge = () => {
     if (!Object.keys(db.entries).length) return '';
-    const age = db.lastBackup ? (Date.now() - new Date(db.lastBackup).getTime()) / 86400000 : Infinity;
+    const last = Math.max(new Date(db.lastBackup || 0).getTime(), new Date(auto.lastAt || 0).getTime());
+    const age = last ? (Date.now() - last) / 86400000 : Infinity;
     if (age < BACKUP_NUDGE_DAYS) return '';
     return `<button type="button" class="banner quiet" data-act="go-data">
-      <span>${db.lastBackup ? 'עבר חודש מהגיבוי האחרון' : 'עוד לא גיבית את הנתונים'}</span><span class="chev" aria-hidden="true">‹</span></button>`;
+      <span>${last ? 'עבר חודש מהגיבוי האחרון' : 'עוד לא גיבית את הנתונים'}</span><span class="chev" aria-hidden="true">‹</span></button>`;
   };
 
   const weekHtml = () => {
@@ -396,6 +457,151 @@
       </div>`;
   };
 
+  const autoWhen = (iso) => {
+    const d = new Date(iso);
+    const time = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    return `${dayLabel(L.toKey(d)) || dateLong.format(d)}, ${time}`;
+  };
+
+  function autoHtml() {
+    const view = state.autoView;
+    const head = '<h2>גיבוי אוטומטי מוצפן</h2>';
+    const message = view.message ? `<p class="auto-message" role="status">${view.message}</p>` : '';
+    const copy = `<button type="button" class="action" data-act="auto-copy">${view.copied ? 'הקוד הועתק ✓' : 'העתקת הקוד'}</button>`;
+
+    if (view.mode === 'new') {
+      return `${head}
+        <p>זה קוד השחזור שלך. שמור אותו במנהל סיסמאות או במקום בטוח אחר, מחוץ לאייפון. <b>בלעדיו אי אפשר לשחזר את הגיבוי, ואין דרך לאפס אותו.</b></p>
+        <p class="recovery" dir="ltr">${view.code}</p>
+        ${message}
+        <div class="stack">
+          ${copy}
+          <button type="button" class="action primary" data-act="auto-confirm">שמרתי את הקוד, להפעיל</button>
+          <button type="button" class="action" data-act="auto-cancel">ביטול</button>
+        </div>`;
+    }
+    if (view.mode === 'restore') {
+      return `${head}
+        <p>הזן את קוד השחזור. הנתונים שבמכשיר יוחלפו בנתונים מהגיבוי.</p>
+        <input id="auto-code" class="recovery-input" type="text" dir="ltr" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="קוד שחזור" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX">
+        ${message}
+        <div class="stack">
+          <button type="button" class="action primary" data-act="auto-restore">שחזור מהגיבוי</button>
+          <button type="button" class="action" data-act="auto-cancel">ביטול</button>
+        </div>`;
+    }
+    if (!auto.code) {
+      return `${head}
+        <p>אחרי כל שינוי נשלח עותק מוצפן לשירות הגיבוי שלך ב-Cloudflare. הוא לא יכול לקרוא אותו, כי רק קוד השחזור פותח אותו.</p>
+        ${message}
+        <div class="stack">
+          <button type="button" class="action primary" data-act="auto-new">הפעלת גיבוי אוטומטי</button>
+          <button type="button" class="action" data-act="auto-restore-open">יש לי קוד שחזור</button>
+        </div>`;
+    }
+
+    let status;
+    if (auto.error === 'mismatch') status = 'הגיבוי נכשל: קוד השחזור לא מתאים לגיבוי שבשירות.';
+    else if (auto.error) status = `הגיבוי לא הושלם, וננסה שוב כשיהיה חיבור.${auto.lastAt ? ` גיבוי אחרון: ${autoWhen(auto.lastAt)}.` : ''}`;
+    else if (auto.lastAt) status = `גיבוי אחרון: ${autoWhen(auto.lastAt)}.`;
+    else status = 'הגיבוי מופעל. הגיבוי הראשון יישלח אחרי שיהיו נתונים.';
+    return `${head}
+      <p class="${auto.error ? 'auto-error' : ''}">${status}</p>
+      ${view.mode === 'reveal' ? `<p class="recovery" dir="ltr">${auto.code}</p>` : ''}
+      ${message}
+      <div class="stack">
+        ${view.mode === 'reveal' ? copy : '<button type="button" class="action" data-act="auto-reveal">הצגת קוד השחזור</button>'}
+        <button type="button" class="action danger-quiet" data-act="auto-off">כיבוי ומחיקת העותק המוצפן</button>
+      </div>`;
+  }
+
+  const showAuto = (next) => {
+    state.autoView = { mode: 'main', message: '', code: '', copied: false, ...next };
+    refreshAuto();
+  };
+
+  const NETWORK_MESSAGE = 'אין חיבור לשירות הגיבוי. נסה שוב בעוד רגע.';
+
+  const autoConfirm = async () => {
+    const { code } = state.autoView;
+    if (Object.keys(db.entries).length) {
+      let status = 0;
+      try {
+        status = await B.upload(BACKUP_URL, code, db.entries);
+      } catch { /* handled below */ }
+      if (status === 403) {
+        return showAuto({ message: 'כבר קיים גיבוי בשירות. כדי להשתמש בו, לחץ על ״יש לי קוד שחזור״.' });
+      }
+      if (status < 200 || status >= 300) {
+        return showAuto({ mode: 'new', code, message: NETWORK_MESSAGE });
+      }
+      auto = { code, lastAt: new Date().toISOString(), dirty: false, error: '' };
+    } else {
+      auto = { code, dirty: true, error: '' };
+    }
+    saveAuto();
+    return showAuto({ message: 'הגיבוי האוטומטי הופעל.' });
+  };
+
+  const autoRestore = async () => {
+    const input = document.getElementById('auto-code');
+    const code = B.normalizeCode(input ? input.value : '');
+    if (!code) return showAuto({ mode: 'restore', message: 'הקוד לא תקין. צריכים להיות בו 24 תווים.' });
+    let result;
+    try {
+      result = await B.download(BACKUP_URL, code);
+    } catch (err) {
+      const unreadable = err && err.name !== 'TypeError';
+      return showAuto({ mode: 'restore', message: unreadable ? 'לא הצלחתי לפתוח את הגיבוי עם הקוד הזה.' : NETWORK_MESSAGE });
+    }
+    if (result.status === 403) return showAuto({ mode: 'restore', message: 'הקוד לא מתאים לגיבוי שבשירות.' });
+    if (result.status === 404) return showAuto({ mode: 'restore', message: 'אין גיבוי בשירות.' });
+    if (!result.entries) return showAuto({ mode: 'restore', message: NETWORK_MESSAGE });
+    const entries = L.cleanEntries(result.entries);
+    const count = Object.keys(entries).length;
+    const current = Object.keys(db.entries).length;
+    const days = (n) => (n === 1 ? 'יום אחד' : `${n} ימים`);
+    const question = current
+      ? `לשחזר ${days(count)} מהגיבוי? הנתונים שבמכשיר (${days(current)}) יוחלפו.`
+      : `לשחזר ${days(count)} מהגיבוי?`;
+    if (!window.confirm(question)) return showAuto({ mode: 'restore' });
+    db.entries = entries;
+    auto = {};
+    persist();
+    if (saveFailed) return showAuto({ mode: 'restore', message: 'השחזור נכשל: לא הצלחתי לשמור במכשיר.' });
+    auto = { code, lastAt: new Date().toISOString(), dirty: false, error: '' };
+    saveAuto();
+    return showAuto({ message: `שוחזרו ${days(count)}. הגיבוי האוטומטי פעיל.` });
+  };
+
+  const autoOff = async () => {
+    if (!window.confirm('לכבות את הגיבוי ולמחוק את העותק המוצפן מהשירות? הנתונים במכשיר יישארו.')) return;
+    let status = 0;
+    try {
+      status = await B.remove(BACKUP_URL, auto.code);
+    } catch { /* handled below */ }
+    if (status !== 403 && (status < 200 || status >= 300)) {
+      showAuto({ message: NETWORK_MESSAGE });
+      return;
+    }
+    clearTimeout(uploadTimer);
+    auto = {};
+    saveAuto();
+    showAuto({ message: status === 403 ? 'הגיבוי כובה במכשיר. העותק שבשירות לא נמחק, כי הקוד לא מתאים לו.' : 'הגיבוי כובה והעותק המוצפן נמחק.' });
+  };
+
+  const autoCopy = async () => {
+    const code = state.autoView.code || auto.code;
+    try {
+      await navigator.clipboard.writeText(code);
+      state.autoView.copied = true;
+      refreshAuto();
+    } catch {
+      const box = document.querySelector('.recovery');
+      if (box) window.getSelection().selectAllChildren(box);
+    }
+  };
+
   const dataHtml = () => {
     const count = Object.keys(db.entries).length;
     const last = db.lastBackup ? dateLong.format(new Date(db.lastBackup)) : 'עדיין לא';
@@ -404,15 +610,16 @@
       ${state.notice ? `<p class="notice" role="status">${state.notice}</p>` : ''}
       <section class="card prose">
         <h2>פרטיות</h2>
-        <p>נתוני השינה נשמרים רק על המכשיר הזה. אין כאן חשבון או ניתוח שימוש, והיישומון חסום טכנית משליחת מידע החוצה.</p>
+        <p>נתוני השינה נשמרים על המכשיר הזה. אין כאן חשבון או ניתוח שימוש, והיישומון חסום טכנית משליחת מידע לכל מקום מלבד שירות הגיבוי שלך. אליו עובר רק עותק מוצפן, ורק אם הפעלת גיבוי אוטומטי.</p>
       </section>
       <section class="card prose" id="push">${pushHtml()}</section>
+      <section class="card prose" id="auto">${autoHtml()}</section>
       <section class="card prose">
-        <h2>גיבוי</h2>
+        <h2>גיבוי לקובץ</h2>
         <p>מחיקת היישומון ממסך הבית מוחקת גם את הנתונים. קובץ גיבוי שומר עותק במקום שתבחר, למשל ב״קבצים״.</p>
         <dl>
           ${statRow('ימים שמורים', count)}
-          ${statRow('גיבוי אחרון', last)}
+          ${statRow('קובץ גיבוי אחרון', last)}
         </dl>
         <div class="stack">
           <button type="button" class="action primary" data-act="export" ${count ? '' : 'disabled'}>יצירת קובץ גיבוי</button>
@@ -421,7 +628,7 @@
       </section>
       <section class="card prose">
         <h2>מחיקה</h2>
-        <p>מוחקת את כל הימים מהמכשיר. אי אפשר לבטל את זה בלי קובץ גיבוי.</p>
+        <p>מוחקת את כל הימים מהמכשיר, וגם את העותק המוצפן אם הגיבוי האוטומטי פעיל. אי אפשר לבטל את זה בלי קובץ גיבוי.</p>
         <button type="button" class="action danger" data-act="wipe" ${count ? '' : 'disabled'}>מחיקת כל הנתונים</button>
       </section>`;
   };
@@ -437,6 +644,7 @@
   const goTab = (tab) => {
     state.tab = tab;
     state.notice = '';
+    state.autoView = { mode: 'main', message: '', code: '', copied: false }; // never leaves the code on screen
     render();
     window.scrollTo(0, 0);
     if (tab === 'data') loadPush();
@@ -657,13 +865,38 @@
     'push-copy': pushCopy,
     export: exportBackup,
     import: () => importInput.click(),
-    wipe: () => {
-      if (!window.confirm('למחוק את כל הנתונים מהמכשיר? אי אפשר לבטל את זה בלי קובץ גיבוי.')) return;
+    wipe: async () => {
+      const question = auto.code
+        ? 'למחוק את כל הנתונים מהמכשיר ואת העותק המוצפן מהשירות? אי אפשר לבטל את זה בלי קובץ גיבוי.'
+        : 'למחוק את כל הנתונים מהמכשיר? אי אפשר לבטל את זה בלי קובץ גיבוי.';
+      if (!window.confirm(question)) return;
+      let cloudKept = false;
+      if (auto.code) {
+        let status = 0;
+        try {
+          status = await B.remove(BACKUP_URL, auto.code);
+        } catch { /* handled below */ }
+        cloudKept = status < 200 || status >= 300;
+        clearTimeout(uploadTimer);
+        // The code stays when deletion failed, so the copy can still be removed later.
+        if (!cloudKept) auto = {};
+        saveAuto();
+      }
       db = { entries: {}, lastBackup: null };
       persist();
-      state.notice = 'כל הנתונים נמחקו.';
+      state.notice = cloudKept
+        ? 'הנתונים במכשיר נמחקו, אבל העותק המוצפן עדיין בשירות. כשיהיה חיבור, לחץ על ״כיבוי ומחיקת העותק המוצפן״.'
+        : 'כל הנתונים נמחקו.';
       render();
     },
+    'auto-new': () => showAuto({ mode: 'new', code: B.newCode() }),
+    'auto-restore-open': () => showAuto({ mode: 'restore' }),
+    'auto-cancel': () => showAuto({}),
+    'auto-confirm': autoConfirm,
+    'auto-restore': autoRestore,
+    'auto-reveal': () => showAuto({ mode: 'reveal' }),
+    'auto-copy': autoCopy,
+    'auto-off': autoOff,
   };
 
   main.addEventListener('click', (ev) => {
@@ -712,8 +945,13 @@
     if (!main.contains(document.activeElement)) render();
   });
 
+  // Retry a backup that did not finish, and try to finish one when the app is put away.
+  document.addEventListener('visibilitychange', () => { runUpload(); });
+  window.addEventListener('online', () => { runUpload(); });
+
   // ---------- start ----------
   render();
+  runUpload();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

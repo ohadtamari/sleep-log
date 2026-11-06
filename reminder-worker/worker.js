@@ -1,10 +1,12 @@
 // Cloudflare Worker that sends the sleep log's morning and evening reminders.
-// It holds no sleep data: only the phone's push address and the reminder hours.
+// It also stores the encrypted backup, which it cannot read: the app encrypts the
+// data with a recovery code that never reaches this service.
 //
 // Setup in the Cloudflare dashboard:
 //   Cron trigger:  0 * * * *   (runs hourly; the code picks the hours below)
 //   Secrets:       VAPID_PRIVATE_JWK, PUSH_SUBSCRIPTION, TEST_TOKEN
 //   Variable:      REMINDER_HOURS, optional, for example "8,22" (Israel time)
+//   KV binding:    BACKUPS
 //
 // Test: open https://<worker address>/test?token=<TEST_TOKEN>
 
@@ -111,6 +113,63 @@ const report = async (response) => {
   return `${expired ? 'subscription expired: enable notifications again in the app. ' : 'failed. '}status ${response.status} ${detail}`;
 };
 
+// ---------- encrypted backup ----------
+const APP_ORIGIN = 'https://ohadtamari.github.io';
+const MAX_BACKUP_BYTES = 1024 * 1024;
+const AUTH_KEY = 'auth';
+const DATA_KEY = 'backup';
+const TOKEN_RE = /^[\w-]{43}$/;
+
+const backupResponse = (body, status) => new Response(body, {
+  status,
+  headers: {
+    'Access-Control-Allow-Origin': APP_ORIGIN,
+    'Access-Control-Allow-Methods': 'GET, PUT, DELETE',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+    'Access-Control-Max-Age': '86400',
+    Vary: 'Origin',
+    'Cache-Control': 'no-store',
+  },
+});
+
+const hashToken = async (token) => b64url(await crypto.subtle.digest('SHA-256', enc.encode(token)));
+
+// There is one backup. The first writer's token claims it, and only the same token
+// can read, replace or delete it. If someone else claimed it first, the app gets a
+// visible 403 and no data is exposed.
+const handleBackup = async (request, env) => {
+  if (request.method === 'OPTIONS') return backupResponse(null, 204);
+  if (!env.BACKUPS) return backupResponse('Backup storage is not configured', 503);
+
+  const token = (request.headers.get('Authorization') || '').replace(/^Bearer /, '');
+  if (!TOKEN_RE.test(token)) return backupResponse('Unauthorized', 401);
+  const hash = await hashToken(token);
+  const stored = await env.BACKUPS.get(AUTH_KEY);
+  if (stored && stored !== hash) return backupResponse('Forbidden', 403);
+
+  if (request.method === 'PUT') {
+    if (Number(request.headers.get('Content-Length') || 0) > MAX_BACKUP_BYTES) return backupResponse('Too large', 413);
+    const body = await request.arrayBuffer();
+    if (body.byteLength === 0) return backupResponse('Empty backup', 400);
+    if (body.byteLength > MAX_BACKUP_BYTES) return backupResponse('Too large', 413);
+    if (!stored) await env.BACKUPS.put(AUTH_KEY, hash);
+    await env.BACKUPS.put(DATA_KEY, body);
+    return backupResponse(null, 204);
+  }
+  if (request.method === 'GET') {
+    const data = stored ? await env.BACKUPS.get(DATA_KEY, 'arrayBuffer') : null;
+    return data ? backupResponse(data, 200) : backupResponse('No backup', 404);
+  }
+  if (request.method === 'DELETE') {
+    if (stored) {
+      await env.BACKUPS.delete(DATA_KEY);
+      await env.BACKUPS.delete(AUTH_KEY);
+    }
+    return backupResponse(null, 204);
+  }
+  return backupResponse('Method not allowed', 405);
+};
+
 export default {
   async scheduled(event, env, ctx) {
     const hour = localHour(new Date(event.scheduledTime));
@@ -120,6 +179,7 @@ export default {
 
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === '/backup') return handleBackup(request, env);
     if (url.pathname !== '/test' || !env.TEST_TOKEN || url.searchParams.get('token') !== env.TEST_TOKEN) {
       return new Response('Not found', { status: 404 });
     }

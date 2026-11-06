@@ -1,10 +1,11 @@
 // Keeps the app working offline. Bump CACHE whenever a file changes.
-const CACHE = 'sleep-log-v3';
+const CACHE = 'sleep-log-v4';
 const ASSETS = [
   './',
   'index.html',
   'styles.css',
   'logic.js',
+  'backup.js',
   'app.js',
   'manifest.webmanifest',
   'icons/icon-180.png',
