@@ -1,5 +1,5 @@
-// Keeps the app working offline. Bump CACHE whenever a file changes.
-const CACHE = 'sleep-log-v4';
+// Keeps the app working offline. Bump CACHE and APP_VERSION in app.js whenever a file changes.
+const CACHE = 'sleep-log-v5';
 const ASSETS = [
   './',
   'index.html',
@@ -14,7 +14,9 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  // 'reload' skips the browser's HTTP cache, which could otherwise store old files in a new version.
+  const fresh = ASSETS.map((url) => new Request(url, { cache: 'reload' }));
+  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(fresh)).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {

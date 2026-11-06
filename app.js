@@ -5,6 +5,7 @@
   const STORE = 'sleep-log.v1';
   const MAX_CUPS = 12;
   const BACKUP_NUDGE_DAYS = 30;
+  const APP_VERSION = 5;
   // Public half of the key that signs reminders. The private half is only in the reminder service.
   const VAPID_PUBLIC_KEY = 'BD8z0uQb2xhVnG59e3U6zjyxefxWexiFfhlGYowPqohGr9QR1BS0sN4kFuMwLM5Cng43Ojesqq4YCRYNEBmWZY8';
   const main = document.getElementById('main');
@@ -630,8 +631,32 @@
         <h2>מחיקה</h2>
         <p>מוחקת את כל הימים מהמכשיר, וגם את העותק המוצפן אם הגיבוי האוטומטי פעיל. אי אפשר לבטל את זה בלי קובץ גיבוי.</p>
         <button type="button" class="action danger" data-act="wipe" ${count ? '' : 'disabled'}>מחיקת כל הנתונים</button>
-      </section>`;
+      </section>
+      <p class="footnote">גרסה ${APP_VERSION}</p>`;
   };
+
+  // ---------- app updates ----------
+  // A phone usually resumes the app instead of restarting it, so each return looks for a new version.
+  let reloadPending = false;
+  // Reloading could lose a recovery code on screen or interrupt typing. Everything else is already saved.
+  const isBusy = () => state.autoView.mode !== 'main'
+    || ['INPUT', 'TEXTAREA'].includes(document.activeElement && document.activeElement.tagName);
+  function reloadIfSafe() {
+    if (reloadPending && !isBusy()) window.location.reload();
+  }
+  if ('serviceWorker' in navigator) {
+    const hadVersion = !!navigator.serviceWorker.controller; // not the first install
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadVersion) return;
+      reloadPending = true;
+      reloadIfSafe();
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return;
+      navigator.serviceWorker.getRegistration().then((reg) => reg && reg.update()).catch(() => {});
+      reloadIfSafe();
+    });
+  }
 
   // ---------- render ----------
   const render = () => {
@@ -648,6 +673,7 @@
     render();
     window.scrollTo(0, 0);
     if (tab === 'data') loadPush();
+    reloadIfSafe();
   };
 
   // ---------- notifications ----------
